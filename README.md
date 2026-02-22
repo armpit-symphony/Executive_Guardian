@@ -2,97 +2,109 @@
 
 Execution Discipline Layer for OpenClaw.
 
-Executive Guardian is a thin execution membrane that wraps high-risk side-effect actions with:
+Executive Guardian wraps high-risk side-effect actions with:
 
-- **Decision logging** (via Executive Layer when available)
-- **Budget locks** (via Executive Layer when available)
-- **Validation tiers** (SUCCESS / FAIL; ACCEPTABLE supported if your Validator supports it)
-- **Confidence calibration** (pre-action confidence recorded; Executive Layer can calibrate)
+- Budget enforcement (via Executive Layer when available)
+- Structured decision logging
+- Validation tiers
+- Confidence post-calibration
+- Schema-adaptive completion logic
 
-It is designed to be Memory Guardian compatible: it does not write to Memory Guardian stores or alter session logs.
+This layer is non-invasive and safe to enable behind a feature flag.
 
 ---
 
-## Modes
+## Architecture
 
-### With Executive Layer installed
+Executive Guardian acts as a membrane around execution:
 
-If Executive Layer is importable (e.g. via PYTHONPATH), Executive Guardian uses the real:
+1. Create DecisionRecord
+2. Acquire BudgetContext
+3. Perform action
+4. Validate result
+5. Complete decision (schema-adaptive)
+6. Log via DecisionJournal
 
-- DecisionRecord
-- DecisionJournal
-- BudgetContext
-- Validator
+It does NOT:
 
-Logging goes to Executive Layer storage (e.g. `executive/decisions/`), as defined by that layer.
+- Modify Memory Guardian
+- Modify session JSONL files
+- Require Agent Guardian
+- Require Token Guardian
 
-### Standalone fallback
+---
 
-If Executive Layer is not available, Executive Guardian falls back to stub implementations and logs to:
+## Compatibility
 
-- `~/.openclaw/logs/guardian-journal.jsonl`
+Designed to adapt to multiple Executive Layer schema versions:
+
+- Supports positional `DecisionRecord.complete(...)`
+- Supports keyword-based complete() variants
+- Supports BudgetContext constructor variations
+- Exposes SUCCESS/FAIL constants
+
+If Executive Layer is unavailable, falls back to lightweight standalone logging.
 
 ---
 
 ## Enable / Disable
 
-Gated by environment flag:
-
 ```bash
-export EXEC_HOOK_ENABLED=1  # enable
-export EXEC_HOOK_ENABLED=0  # disable (default)
+export EXEC_HOOK_ENABLED=1 # enable
+export EXEC_HOOK_ENABLED=0 # disable (default)
 ```
 
 ---
 
-## High-Risk Allowlist
+## Allowlist
 
-Allowlisted action types:
+Only these action types are routed through the membrane:
 
+- command_exec
 - file_write
 - file_delete
-- command_exec
 - json_write
 - http_request
 
+Modify HIGH_RISK_ALLOWLIST in guardian.py to adjust scope.
+
 ---
 
-## Usage
-
-### Status / Smoke test
-
-```bash
-PYTHONPATH=/home/sparky/.openclaw/workspace:. python3 -c "from executive_guardian import get_status; print(get_status())"
-```
-
-### Generic membrane
-
-```python
-from executive_guardian import exec_with_guard
-
-result = exec_with_guard(
-    task_id="task_123",
-    lane="main",
-    action_type="file_write",
-    expected_outcome="File created at /tmp/test.txt",
-    confidence_pre=0.75,
-    perform_fn=lambda: write("/tmp/test.txt", "content"),
-    validate_fn=lambda r: ("success", {"exists": True}),
-)
-```
-
-### Wrappers
+## Example
 
 ```python
 from executive_guardian import wrap_command_exec
 
-wrap_command_exec("task_smoke", "main", "echo EG_OK")
+wrap_command_exec("task_123", "main", "echo HELLO")
 ```
+
+Creates a fully completed decision entry under:
+`workspace/executive/decisions/YYYY-MM-DD.jsonl`
 
 ---
 
-## Notes
+## Operational Behavior
 
-- Executive Guardian does not install Agent Guardian.
-- Executive Guardian does not depend on Token Guardian.
-- It can run today, even if those layers are missing.
+Executive Guardian:
+
+- Creates decision records
+- Completes decisions (no "pending" left behind)
+- Logs observed outcomes
+- Stamps validator metadata
+- Updates confidence.post
+- Logs failures even if validation errors occur
+
+Pending decisions only appear if an exception interrupts execution before validation.
+
+---
+
+## Recommended Rollout
+
+1. Enable behind feature flag
+2. Wrap high-risk tools only
+3. Observe decision log stability
+4. Promote to router-level integration
+
+---
+
+Executive Guardian provides execution discipline without architectural disruption.
