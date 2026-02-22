@@ -35,8 +35,17 @@ Files:
 - `guardian.py` — core membrane + wrappers
 - `__init__.py` — exports
 
-Dependency:
-- Executive Layer v1.3 must exist at: `/home/sparky/.openclaw/workspace/executive/`
+### Integration
+
+Executive Guardian integrates with **Executive Layer** when available:
+
+- **With Executive Layer:** `/home/sparky/.openclaw/workspace/executive/`
+  - Logs to `executive/decisions/`
+  - Uses real BudgetContext, DecisionJournal, Validator
+
+- **Standalone (fallback):** No dependency required
+  - Logs to `~/.openclaw/logs/guardian-journal.jsonl`
+  - Uses stub implementations
 
 ---
 
@@ -65,8 +74,9 @@ Only allowlisted action types are routed through the membrane:
 - `file_write`
 - `file_delete`
 - `command_exec`
-- `http_request`
 - `json_write`
+
+Note: `http_request` was removed from allowlist until `wrap_http_request` is fully integrated.
 
 You can expand or reduce this list in:
 `executive_guardian/guardian.py` → `HIGH_RISK_ALLOWLIST = {...}`
