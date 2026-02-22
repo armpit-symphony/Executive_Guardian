@@ -6,19 +6,14 @@ def out(obj, code=0):
     raise SystemExit(code)
 
 def load_guardian():
-    # Ensure local module import works when invoked from anywhere
     import os
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
         sys.path.insert(0, here)
-    ws="/home/sparky/.openclaw/workspace"
-    if ws not in sys.path:
-        sys.path.insert(0, ws)
     import guardian as g
     return g
 
 def serialize_result(res):
-    # Handle subprocess.CompletedProcess and other common objects
     try:
         if hasattr(res, "returncode") and hasattr(res, "stdout") and hasattr(res, "stderr"):
             return {
@@ -27,7 +22,6 @@ def serialize_result(res):
                 "stdout": getattr(res, "stdout", None),
                 "stderr": getattr(res, "stderr", None),
             }
-        # Fallback: try JSON, else string
         json.dumps(res)
         return res
     except Exception:
@@ -51,11 +45,7 @@ def main():
 
     try:
         if msg_type == "ping":
-            out({
-                "ok": True,
-                "type": "ping",
-                "status": g.get_status(),
-            })
+            out({"ok": True, "type": "ping", "status": g.get_status()})
 
         elif msg_type == "command_exec":
             task_id = msg.get("task_id", "unknown")
@@ -65,17 +55,46 @@ def main():
                 out({"ok": False, "type": msg_type, "error": "missing_command"}, 2)
 
             res = g.wrap_command_exec(task_id=task_id, lane=lane, command=command)
-            out({
-                "ok": True,
-                "type": msg_type,
-                "task_id": task_id,
-                "lane": lane,
-                "result": serialize_result(res),
-            })
+            out({"ok": True, "type": msg_type, "task_id": task_id, "lane": lane, "result": serialize_result(res)})
+
+        elif msg_type == "file_write":
+            # expects: task_id, lane, path, content (string or bytes via base64 later; keep string now)
+            from pathlib import Path
+            task_id = msg.get("task_id", "unknown")
+            lane = msg.get("lane", "main")
+            path = msg.get("path")
+            content = msg.get("content", "")
+            if not path:
+                out({"ok": False, "type": msg_type, "error": "missing_path"}, 2)
+
+            def perform():
+                p = Path(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                # content is string
+                p.write_text(content, encoding="utf-8")
+                return {"written": True, "path": str(p), "bytes": len(content.encode("utf-8"))}
+
+            def validate(res):
+                p = Path(path)
+                ok = p.exists() and p.stat().st_size > 0
+                tier = "success" if ok else "fail"
+                meta = {"exists": p.exists(), "size": (p.stat().st_size if p.exists() else 0), "path": str(p)}
+                return (tier, meta)
+
+            # Use the guardian membrane directly so it journals + validates
+            result = g.exec_with_guard(
+                task_id=task_id,
+                lane=lane,
+                action_type="file_write",
+                expected_outcome=f"file_write {path}",
+                confidence_pre=0.75,
+                perform_fn=perform,
+                validate_fn=validate,
+                metadata={"path": path, "content_len": len(content)},
+            )
+            out({"ok": True, "type": msg_type, "task_id": task_id, "lane": lane, "result": serialize_result(result)})
 
         elif msg_type == "http_request":
-            # expects: task_id, lane, expected_statuses (optional), and a request payload:
-            # {"method":"GET","url":"http://...","headers":{...},"body": "..."}
             task_id = msg.get("task_id", "unknown")
             lane = msg.get("lane", "main")
             expected_statuses = msg.get("expected_statuses", (200, 201, 202, 204))
@@ -92,17 +111,20 @@ def main():
                 data = b.encode("utf-8") if isinstance(b, str) else b
 
             headers = req.get("headers") or {}
+
             def _do():
                 r = urllib.request.Request(url, data=data, headers=headers, method=method)
                 with urllib.request.urlopen(r, timeout=30) as resp:
                     body = resp.read()
-                    try:
-                        body_txt = body.decode("utf-8", errors="replace")
-                    except Exception:
-                        body_txt = repr(body)
+                    body_txt = body.decode("utf-8", errors="replace")
                     return {"status": resp.status, "headers": dict(resp.headers), "body": body_txt}
 
-            res = g.wrap_http_request(task_id=task_id, lane=lane, request_fn=_do, expected_statuses=tuple(expected_statuses))
+            res = g.wrap_http_request(
+                task_id=task_id,
+                lane=lane,
+                request_fn=_do,
+                expected_statuses=tuple(expected_statuses),
+            )
             out({"ok": True, "type": msg_type, "task_id": task_id, "lane": lane, "result": serialize_result(res)})
 
         else:
@@ -111,13 +133,7 @@ def main():
     except SystemExit:
         raise
     except Exception as e:
-        out({
-            "ok": False,
-            "type": msg_type,
-            "error": "exception",
-            "detail": str(e),
-            "trace": traceback.format_exc(),
-        }, 1)
+        out({"ok": False, "type": msg_type, "error": "exception", "detail": str(e), "trace": traceback.format_exc()}, 1)
 
 if __name__ == "__main__":
     main()
