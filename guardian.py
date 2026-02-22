@@ -98,6 +98,22 @@ HIGH_RISK_ALLOWLIST = {
 journal = DecisionJournal()
 validator = Validator()
 
+def _tier(name: str) -> str:
+    """Resolve validation tier across Executive Layer versions."""
+    # Prefer Validator enums/attrs if present; else fall back to strings.
+    for cand in (name, name.upper(), name.lower()):
+        if hasattr(validator, cand):
+            return getattr(validator, cand)
+    # Common tiers in our stack
+    if name.upper() == "SUCCESS":
+        return "SUCCESS"
+    if name.upper() == "FAIL":
+        return "FAIL"
+    if name.upper() == "ACCEPTABLE":
+        return "ACCEPTABLE"
+    return name
+
+
 
 def _safe_kwargs(callable_obj, **kwargs) -> Dict[str, Any]:
     """Return only kwargs supported by callable_obj's signature."""
@@ -222,7 +238,7 @@ def wrap_command_exec(task_id: str, lane: str, command: str):
     def validate(res):
         ok = (res.returncode == 0)
         return (
-            validator.SUCCESS if ok else validator.FAIL,
+            _tier('SUCCESS') if ok else _tier('FAIL'),
             {
                 "returncode": res.returncode,
                 "stdout": (res.stdout or "")[:500],
@@ -249,7 +265,7 @@ def wrap_http_request(task_id: str, lane: str, request_fn: Callable[[], Any], ex
     def validate(res):
         status = res.get("status_code") if isinstance(res, dict) else getattr(res, "status_code", None)
         ok = status in expected_statuses
-        return (validator.SUCCESS if ok else validator.FAIL, {"status_code": status, "expected": list(expected_statuses)})
+        return (_tier('SUCCESS') if ok else _tier('FAIL'), {"status_code": status, "expected": list(expected_statuses)})
 
     return exec_with_guard(
         task_id=task_id,
