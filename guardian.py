@@ -1,58 +1,54 @@
 """
 Executive Guardian v1.0
-Execution membrane for OpenClaw
+Execution membrane for OpenClaw.
 
-Uses Executive Layer when available; falls back to stubs for standalone testing.
+Behavior:
+- If Executive Layer is installed (workspace/executive), uses REAL:
+  DecisionRecord, DecisionJournal, BudgetContext, Validator
+- Otherwise falls back to lightweight stubs for standalone operation.
+
+Feature flag: EXEC_HOOK_ENABLED=1 enables membrane routing (allowlist-based)
 """
 
+from __future__ import annotations
+
 import os
-import sys
 import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any, Callable, Dict, Tuple
 
 # ========================================================
-# Try real Executive Layer imports, fallback to stubs
+# Try REAL Executive Layer first, fallback to stubs
 # ========================================================
 
-_EXECUTIVE_AVAILABLE = False
+USING_EXECUTIVE_LAYER = False
 
 try:
-    # Add executive layer to path
-    exec_path = Path("/home/sparky/.openclaw/workspace/executive")
-    if exec_path.exists() and str(exec_path) not in sys.path:
-        sys.path.insert(0, str(exec_path))
-    
-    from executive import (
-        DecisionRecord,
-        DecisionJournal,
-        BudgetContext,
-        Validator,
-    )
-    _EXECUTIVE_AVAILABLE = True
-    
-except ImportError:
-    # Stub implementations for standalone testing
+    from executive import DecisionRecord, DecisionJournal, BudgetContext, Validator  # type: ignore
+    USING_EXECUTIVE_LAYER = True
+
+except Exception:
+    # ---------------------------
+    # STUBS (standalone fallback)
+    # ---------------------------
+
     class Validator:
-        """Validation tier constants."""
         SUCCESS = "success"
         FAIL = "fail"
-        WARNING = "warning"
+        ACCEPTABLE = "acceptable"
 
 
     class DecisionRecord:
-        """Record of a single decision."""
-        
         def __init__(
             self,
             task_id: str,
             action_type: str,
             expected_outcome: str,
             confidence_pre: float,
-            policy_check: dict = None,
-            metadata: dict = None,
+            policy_check: Dict[str, Any] | None = None,
+            metadata: Dict[str, Any] | None = None,
         ):
             self.task_id = task_id
             self.action_type = action_type
@@ -65,20 +61,25 @@ except ImportError:
             self.error = None
             self.validation_tier = None
             self.confidence_post = None
-        
-        def complete(self, validation_tier: str, validator_metadata: dict = None):
+            self.validator_metadata = None
+
+        def complete(
+            self,
+            validation_tier: str,
+            validator_metadata: Dict[str, Any] | None = None,
+            **_,
+        ):
             self.result = "success"
             self.validation_tier = validation_tier
             self.confidence_post = self.confidence_pre
-            if validator_metadata:
-                self.metadata.update(validator_metadata)
-        
-        def fail(self, error: str):
+            self.validator_metadata = validator_metadata or {}
+
+        def fail(self, error: str, **_) -> None:
             self.result = "fail"
             self.error = error
             self.confidence_post = self.confidence_pre * 0.5
-        
-        def to_dict(self) -> dict:
+
+        def to_dict(self) -> Dict[str, Any]:
             return {
                 "task_id": self.task_id,
                 "action_type": self.action_type,
@@ -89,39 +90,43 @@ except ImportError:
                 "validation_tier": self.validation_tier,
                 "error": self.error,
                 "timestamp": self.timestamp,
+                "policy_check": self.policy_check,
                 "metadata": self.metadata,
+                "validator_metadata": self.validator_metadata,
+                "using_executive_layer": False,
             }
 
 
     class DecisionJournal:
-        """Log decisions to file."""
-        
-        def __init__(self, log_path: str = None):
+        def __init__(self, log_path: str | None = None):
             if log_path is None:
-                # Fallback to guardian-specific log
                 log_path = os.path.expanduser("~/.openclaw/logs/guardian-journal.jsonl")
             self.log_path = Path(log_path)
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        def log(self, decision: DecisionRecord):
-            with open(self.log_path, "a") as f:
+
+        def log(self, decision: DecisionRecord) -> None:
+            with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(decision.to_dict()) + "\n")
 
 
     class BudgetContext:
-        """Budget context manager (stub)."""
-        
-        def __init__(self, task_id: str, lane: str, action_type: str = None):
+        def __init__(
+            self,
+            task_id: str,
+            lane: str,
+            action_type: str | None = None,
+            **_,
+        ):
             self.task_id = task_id
             self.lane = lane
             self.action_type = action_type
             self.start_time = datetime.utcnow()
-        
+
         def __enter__(self):
             return self
-        
-        def __exit__(self, *args):
-            duration = (datetime.utcnow() - self.start_time).total_seconds()
+
+        def __exit__(self, *args) -> bool:
+            return False
 
 
 # ========================================================
@@ -129,19 +134,30 @@ except ImportError:
 # ========================================================
 
 EXEC_HOOK_ENABLED = os.getenv("EXEC_HOOK_ENABLED", "0") == "1"
-GUARDIAN_LOG_LEVEL = os.getenv("GUARDIAN_LOG_LEVEL", "INFO")
 
-# Note: http_request removed from allowlist until wrap_http_request is implemented
+# Allowlist of action types routed through the membrane
 HIGH_RISK_ALLOWLIST = {
     "file_write",
     "file_delete",
     "command_exec",
     "json_write",
+    "http_request",
 }
 
-# Initialize journal
+# If using Executive Layer, its DecisionJournal will write to executive/decisions
+# Otherwise fallback journal writes to ~/.openclaw/logs/guardian-journal.jsonl
 journal = DecisionJournal()
 validator = Validator()
+
+
+def get_status() -> Dict[str, Any]:
+    """Quick status for smoke tests."""
+    return {
+        "exec_hook_enabled": EXEC_HOOK_ENABLED,
+        "using_executive_layer": USING_EXECUTIVE_LAYER,
+        "allowlist": sorted(HIGH_RISK_ALLOWLIST),
+        "journal_type": type(journal).__name__,
+    }
 
 
 # ========================================================
@@ -156,19 +172,18 @@ def exec_with_guard(
     expected_outcome: str,
     confidence_pre: float,
     perform_fn: Callable[[], Any],
-    validate_fn: Callable[[Any], tuple],
-    metadata: dict | None = None,
-):
+    validate_fn: Callable[[Any], Tuple[str, Dict[str, Any]]],
+    metadata: Dict[str, Any] | None = None,
+) -> Any:
     """
     Wrap execution with:
-    - Budget locks
-    - Validation tiers
+    - Budget locks (real when Executive Layer is present)
+    - Validation tier assignment
     - Decision logging
-    - Confidence calibration
     """
-    if not EXEC_HOOK_ENABLED or action_type not in HIGH_RISK_ALLOWLIST:
+    if (not EXEC_HOOK_ENABLED) or (action_type not in HIGH_RISK_ALLOWLIST):
         return perform_fn()
-    
+
     decision = DecisionRecord(
         task_id=task_id,
         action_type=action_type,
@@ -177,16 +192,21 @@ def exec_with_guard(
         policy_check={"executive_guardian": "pass"},
         metadata=metadata or {},
     )
-    
+
     try:
         with BudgetContext(task_id, lane, action_type=action_type):
             result = perform_fn()
-        
+
         tier, vmeta = validate_fn(result)
-        decision.complete(validation_tier=tier, validator_metadata=vmeta)
+        # Executive Layer signature supports more fields; stubs ignore extras.
+        decision.complete(
+            validation_tier=tier,
+            validator_metadata=vmeta,
+            confidence_post=confidence_pre,  # ok; Executive Layer may overwrite
+        )
         journal.log(decision)
         return result
-    
+
     except Exception as e:
         decision.fail(error=str(e))
         journal.log(decision)
@@ -197,34 +217,33 @@ def exec_with_guard(
 # High-Risk Wrappers
 # ========================================================
 
+
 def wrap_file_write(
     task_id: str,
     lane: str,
     file_path: str,
     content: str,
-    write_fn: Callable,
-):
-    """Wrap file write with validation."""
-    
+    write_fn: Callable[[str, str], Any],
+) -> Any:
     def perform():
         return write_fn(file_path, content)
-    
+
     def validate(_):
         exists = os.path.exists(file_path)
         return (
-            Validator.SUCCESS if exists else Validator.FAIL,
-            {"exists": exists, "path": file_path},
+            validator.SUCCESS if exists else validator.FAIL,
+            {"exists": exists, "path": file_path, "bytes": len(content)},
         )
-    
+
     return exec_with_guard(
         task_id=task_id,
         lane=lane,
         action_type="file_write",
         expected_outcome=f"{file_path} exists",
-        confidence_pre=0.8,
+        confidence_pre=0.80,
         perform_fn=perform,
         validate_fn=validate,
-        metadata={"path": file_path, "bytes": len(content)},
+        metadata={"path": file_path},
     )
 
 
@@ -232,20 +251,18 @@ def wrap_file_delete(
     task_id: str,
     lane: str,
     file_path: str,
-    delete_fn: Callable,
-):
-    """Wrap file delete with validation."""
-    
+    delete_fn: Callable[[str], Any],
+) -> Any:
     def perform():
         return delete_fn(file_path)
-    
+
     def validate(_):
-        exists = os.path.exists(file_path)
+        exists_after = os.path.exists(file_path)
         return (
-            Validator.SUCCESS if not exists else Validator.FAIL,
-            {"exists_after": exists, "path": file_path},
+            validator.SUCCESS if not exists_after else validator.FAIL,
+            {"exists_after": exists_after, "path": file_path},
         )
-    
+
     return exec_with_guard(
         task_id=task_id,
         lane=lane,
@@ -258,34 +275,27 @@ def wrap_file_delete(
     )
 
 
-def wrap_command_exec(task_id: str, lane: str, command: str):
-    """Wrap command execution with validation."""
-    
+def wrap_command_exec(task_id: str, lane: str, command: str) -> Any:
     def perform():
-        return subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-        )
-    
-    def validate(result):
-        success = result.returncode == 0
+        return subprocess.run(command, shell=True, capture_output=True, text=True)
+
+    def validate(res):
+        ok = (res.returncode == 0)
         return (
-            Validator.SUCCESS if success else Validator.FAIL,
+            validator.SUCCESS if ok else validator.FAIL,
             {
-                "returncode": result.returncode,
-                "stdout": result.stdout[:500],
-                "stderr": result.stderr[:500],
+                "returncode": res.returncode,
+                "stdout": (res.stdout or "")[:500],
+                "stderr": (res.stderr or "")[:500],
             },
         )
-    
+
     return exec_with_guard(
         task_id=task_id,
         lane=lane,
         action_type="command_exec",
         expected_outcome=f"{command} exit 0",
-        confidence_pre=0.7,
+        confidence_pre=0.70,
         perform_fn=perform,
         validate_fn=validate,
         metadata={"command": command},
@@ -296,23 +306,21 @@ def wrap_json_write(
     task_id: str,
     lane: str,
     file_path: str,
-    data: dict,
-    write_fn: Callable,
-):
-    """Wrap JSON write with validation."""
-    
+    data: Dict[str, Any],
+    write_fn: Callable[[str, str], Any],
+) -> Any:
     def perform():
         write_fn(file_path, json.dumps(data, indent=2))
         return file_path
-    
+
     def validate(_):
         try:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 json.load(f)
-            return Validator.SUCCESS, {"json_valid": True}
+            return validator.SUCCESS, {"json_valid": True, "path": file_path}
         except Exception as e:
-            return Validator.FAIL, {"json_valid": False, "error": str(e)}
-    
+            return validator.FAIL, {"json_valid": False, "path": file_path, "error": str(e)}
+
     return exec_with_guard(
         task_id=task_id,
         lane=lane,
@@ -328,59 +336,37 @@ def wrap_json_write(
 def wrap_http_request(
     task_id: str,
     lane: str,
-    method: str,
-    url: str,
-    headers: dict = None,
-    body: str = None,
-    request_fn: Callable = None,
-):
+    request_fn: Callable[[], Any],
+    expected_statuses: Tuple[int, ...] = (200, 201, 202, 204),
+) -> Any:
     """
-    Wrap HTTP request with validation.
-    
-    Note: Requires request_fn to be provided. If not, uses stub that always succeeds.
+    Generic HTTP wrapper.
+    request_fn should return an object with at least:
+    - status_code (int) OR a dict {"status_code": int}
     """
-    
+
     def perform():
-        if request_fn:
-            return request_fn(method, url, headers=headers, body=body)
-        # Stub: just return success
-        return {"status": "stub", "method": method, "url": url}
-    
-    def validate(response):
-        # Check for HTTP success status
-        if isinstance(response, dict):
-            status = response.get("status", 200)
-            success = 200 <= status < 400
+        return request_fn()
+
+    def validate(res):
+        status = None
+        if isinstance(res, dict):
+            status = res.get("status_code")
         else:
-            success = True
-        
+            status = getattr(res, "status_code", None)
+        ok = status in expected_statuses
         return (
-            Validator.SUCCESS if success else Validator.FAIL,
-            {"response": str(response)[:200]},
+            validator.SUCCESS if ok else validator.FAIL,
+            {"status_code": status, "expected": list(expected_statuses)},
         )
-    
+
     return exec_with_guard(
         task_id=task_id,
         lane=lane,
         action_type="http_request",
-        expected_outcome=f"{method} {url} returns 2xx",
+        expected_outcome=f"HTTP status in {list(expected_statuses)}",
         confidence_pre=0.75,
         perform_fn=perform,
         validate_fn=validate,
-        metadata={"method": method, "url": url},
+        metadata={"expected_statuses": list(expected_statuses)},
     )
-
-
-# ========================================================
-# Status
-# ========================================================
-
-def get_status() -> dict:
-    """Get Executive Guardian status."""
-    log_path = getattr(journal, 'log_path', None) or getattr(journal, 'base_dir', None) or "unknown"
-    return {
-        "exec_hook_enabled": EXEC_HOOK_ENABLED,
-        "executive_layer_available": _EXECUTIVE_AVAILABLE,
-        "high_risk_allowlist": list(HIGH_RISK_ALLOWLIST),
-        "log_path": str(log_path),
-    }
