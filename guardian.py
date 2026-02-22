@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
-USING_EXECUTIVE_LAYER = False
+USING_EXECUTIVE_LAYER = (os.getenv("USING_EXECUTIVE_LAYER","0")=="1")
 
 # =========================================================
 # Try REAL Executive Layer first; fallback to stubs
