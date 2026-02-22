@@ -169,6 +169,20 @@ def _safe_decision_kwargs(**kwargs):
         return {k: v for k, v in kwargs.items() if k in essentials}
 
 
+
+def _safe_kwargs_for(callable_obj, **kwargs):
+    """
+    Only pass kwargs supported by callable_obj's signature.
+    Works across Executive Layer schema versions.
+    """
+    try:
+        sig = inspect.signature(callable_obj)
+        allowed = set(sig.parameters.keys())
+        allowed.discard("self")
+        return {k: v for k, v in kwargs.items() if k in allowed}
+    except Exception:
+        return {}
+
 def get_status() -> Dict[str, Any]:
     """Quick status for smoke tests."""
     return {
@@ -203,29 +217,33 @@ def exec_with_guard(
     if (not EXEC_HOOK_ENABLED) or (action_type not in HIGH_RISK_ALLOWLIST):
         return perform_fn()
 
-    decision = DecisionRecord(**_safe_decision_kwargs(
+    decision = DecisionRecord(**_safe_kwargs_for(DecisionRecord.__init__,
         task_id=task_id,
         action_type=action_type,
         expected_outcome=expected_outcome,
         confidence_pre=confidence_pre,
         policy_check={"executive_guardian": "pass"},
         metadata=metadata or {},
-    ))try:
+    ))
+)
+
+    try:
         with BudgetContext(task_id, lane, action_type=action_type):
             result = perform_fn()
 
         tier, vmeta = validate_fn(result)
         # Executive Layer signature supports more fields; stubs ignore extras.
-        decision.complete(
-            validation_tier=tier,
-            validator_metadata=vmeta,
-            confidence_post=confidence_pre,  # ok; Executive Layer may overwrite
-        )
-        journal.log(decision)
+        decision.complete(**_safe_kwargs_for(decision.complete,
+                validation_tier=tier,
+                validator_metadata=vmeta,
+                confidence_post=confidence_pre,
+            ))
+journal.log(decision)
         return result
 
     except Exception as e:
-        decision.fail(error=str(e))
+        decision.fail(**_safe_kwargs_for(decision.fail, error=str(e)))
+)
         journal.log(decision)
         raise
 
