@@ -18,11 +18,11 @@ This layer is non-invasive and safe to enable behind a feature flag.
 
 Executive Guardian acts as a membrane around execution:
 
-1. Create DecisionRecord
-2. Acquire BudgetContext
-3. Perform action
-4. Validate result
-5. Complete decision (schema-adaptive)
+1. Create a DecisionRecord
+2. Acquire a BudgetContext
+3. Perform the action
+4. Validate the result
+5. Complete the decision (schema-adaptive)
 6. Log via DecisionJournal
 
 It does NOT:
@@ -36,14 +36,14 @@ It does NOT:
 
 ## Compatibility
 
-Designed to adapt to multiple Executive Layer schema versions:
+Executive Guardian adapts to multiple Executive Layer schema versions:
 
 - Supports positional `DecisionRecord.complete(...)`
-- Supports keyword-based complete() variants
-- Supports BudgetContext constructor variations
-- Exposes SUCCESS/FAIL constants
+- Supports other complete signatures via adapters
+- Adapts to BudgetContext constructor variations
+- Does not rely on Validator constants
 
-If Executive Layer is unavailable, falls back to lightweight standalone logging.
+In standalone mode (Executive Layer missing), it falls back to lightweight logging.
 
 ---
 
@@ -54,11 +54,9 @@ export EXEC_HOOK_ENABLED=1 # enable
 export EXEC_HOOK_ENABLED=0 # disable (default)
 ```
 
----
-
 ## Allowlist
 
-Only these action types are routed through the membrane:
+Actions that are routed via the membrane:
 
 - command_exec
 - file_write
@@ -66,7 +64,7 @@ Only these action types are routed through the membrane:
 - json_write
 - http_request
 
-Modify HIGH_RISK_ALLOWLIST in guardian.py to adjust scope.
+Modify HIGH_RISK_ALLOWLIST in guardian.py to adjust this list.
 
 ---
 
@@ -78,7 +76,7 @@ from executive_guardian import wrap_command_exec
 wrap_command_exec("task_123", "main", "echo HELLO")
 ```
 
-Creates a fully completed decision entry under:
+This produces a completed decision in:
 `workspace/executive/decisions/YYYY-MM-DD.jsonl`
 
 ---
@@ -88,23 +86,18 @@ Creates a fully completed decision entry under:
 Executive Guardian:
 
 - Creates decision records
-- Completes decisions (no "pending" left behind)
+- Completes decisions
 - Logs observed outcomes
 - Stamps validator metadata
-- Updates confidence.post
-- Logs failures even if validation errors occur
+- Sets post-confidence
 
-Pending decisions only appear if an exception interrupts execution before validation.
+Failures are logged; pending only occurs if execution aborts before validation.
 
 ---
 
-## Recommended Rollout
+## Rollout Plan
 
 1. Enable behind feature flag
 2. Wrap high-risk tools only
 3. Observe decision log stability
-4. Promote to router-level integration
-
----
-
-Executive Guardian provides execution discipline without architectural disruption.
+4. Integrate into the agent's global tool router
