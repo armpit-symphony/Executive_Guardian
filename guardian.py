@@ -13,6 +13,7 @@ Feature flag: EXEC_HOOK_ENABLED=1 enables membrane routing (allowlist-based)
 from __future__ import annotations
 
 import os
+import inspect
 import json
 import subprocess
 from datetime import datetime
@@ -150,6 +151,24 @@ journal = DecisionJournal()
 validator = Validator()
 
 
+
+def _safe_decision_kwargs(**kwargs):
+    """
+    Only pass kwargs that the current DecisionRecord.__init__ supports.
+    This makes Executive Guardian compatible across Executive Layer schema versions.
+    """
+    try:
+        sig = inspect.signature(DecisionRecord.__init__)
+        allowed = set(sig.parameters.keys())
+        # remove self
+        allowed.discard("self")
+        return {k: v for k, v in kwargs.items() if k in allowed}
+    except Exception:
+        # If anything weird happens, be conservative and pass the essentials only.
+        essentials = {"task_id", "action_type", "expected_outcome", "confidence_pre"}
+        return {k: v for k, v in kwargs.items() if k in essentials}
+
+
 def get_status() -> Dict[str, Any]:
     """Quick status for smoke tests."""
     return {
@@ -184,16 +203,14 @@ def exec_with_guard(
     if (not EXEC_HOOK_ENABLED) or (action_type not in HIGH_RISK_ALLOWLIST):
         return perform_fn()
 
-    decision = DecisionRecord(
+    decision = DecisionRecord(**_safe_decision_kwargs(
         task_id=task_id,
         action_type=action_type,
         expected_outcome=expected_outcome,
         confidence_pre=confidence_pre,
         policy_check={"executive_guardian": "pass"},
         metadata=metadata or {},
-    )
-
-    try:
+    ))try:
         with BudgetContext(task_id, lane, action_type=action_type):
             result = perform_fn()
 
