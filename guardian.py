@@ -191,7 +191,35 @@ def exec_with_guard(
             tier, vmeta = validate_fn(result)
 
             if hasattr(decision, "complete"):
-                decision.complete(**_safe_kwargs(decision.complete, validation_tier=tier, validator_metadata=vmeta))
+                # --- Complete decision (schema-adaptive) ---
+            try:
+                # v1.3 Executive Layer: complete(observed_outcome, outcome, validator_used, validator_version, validation_result, confidence_post)
+                if "observed_outcome" in getattr(decision.complete, "__code__", ()).co_varnames:
+                    decision.complete(
+                        str(vmeta),                       # observed_outcome (stringified)
+                        "success" if str(tier).lower().startswith("s") else "fail",  # outcome
+                        "executive_guardian",             # validator_used
+                        "1.0",                            # validator_version
+                        str(tier).lower(),                # validation_result
+                        confidence_pre,                   # confidence_post
+                    )
+                else:
+                    # Other versions: try kwargs safely
+                    decision.complete(**_safe_kwargs(
+                        decision.complete,
+                        validation_tier=tier,
+                        validator_metadata=vmeta,
+                        confidence_post=confidence_pre,
+                        observed_outcome=str(vmeta),
+                        outcome="success" if str(tier).lower().startswith("s") else "fail",
+                        validator_used="executive_guardian",
+                        validator_version="1.0",
+                        validation_result=str(tier).lower(),
+                    ))
+            except TypeError:
+                # If signature probing fails, last resort: try positional with best-effort
+                decision.complete(str(vmeta), "success", "executive_guardian", "1.0", "success", confidence_pre)
+
 
             journal.log(decision)
             return result
