@@ -190,35 +190,45 @@ def exec_with_guard(
             result = perform_fn()
             tier, vmeta = validate_fn(result)
 
-            if hasattr(decision, "complete"):
-                # --- Complete decision (schema-adaptive) ---
+
+            # --- Complete decision (Executive Layer v1.3 compatible) ---
+            # complete(observed_outcome, outcome, validator_used, validator_version, validation_result, confidence_post)
             try:
-                # v1.3 Executive Layer: complete(observed_outcome, outcome, validator_used, validator_version, validation_result, confidence_post)
-                if "observed_outcome" in getattr(decision.complete, "__code__", ()).co_varnames:
-                    decision.complete(
-                        str(vmeta),                       # observed_outcome (stringified)
-                        "success" if str(tier).lower().startswith("s") else "fail",  # outcome
-                        "executive_guardian",             # validator_used
-                        "1.0",                            # validator_version
-                        str(tier).lower(),                # validation_result
-                        confidence_pre,                   # confidence_post
-                    )
-                else:
-                    # Other versions: try kwargs safely
+                observed_outcome = json.dumps(vmeta) if isinstance(vmeta, (dict, list)) else str(vmeta)
+            except Exception:
+                observed_outcome = str(vmeta)
+
+            outcome = "success" if str(tier).lower().startswith("s") else "fail"
+            validation_result = str(tier).lower()
+
+            try:
+                # Most important: satisfy required positional args for your DecisionRecord.complete()
+                decision.complete(
+                    observed_outcome,
+                    outcome,
+                    "executive_guardian",
+                    "1.0",
+                    validation_result,
+                    confidence_pre,
+                )
+            except TypeError:
+                # Fallback for other schema versions: try kwargs safely
+                try:
                     decision.complete(**_safe_kwargs(
                         decision.complete,
-                        validation_tier=tier,
-                        validator_metadata=vmeta,
-                        confidence_post=confidence_pre,
-                        observed_outcome=str(vmeta),
-                        outcome="success" if str(tier).lower().startswith("s") else "fail",
+                        observed_outcome=observed_outcome,
+                        outcome=outcome,
                         validator_used="executive_guardian",
                         validator_version="1.0",
-                        validation_result=str(tier).lower(),
+                        validation_result=validation_result,
+                        confidence_post=confidence_pre,
+                        validation_tier=tier,
+                        validator_metadata=vmeta,
                     ))
-            except TypeError:
-                # If signature probing fails, last resort: try positional with best-effort
-                decision.complete(str(vmeta), "success", "executive_guardian", "1.0", "success", confidence_pre)
+                except Exception:
+                    pass
+
+
 
 
             journal.log(decision)
