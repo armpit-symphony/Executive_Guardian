@@ -166,8 +166,43 @@ def exec_with_guard(
             return result
 
     except Exception as e:
-        decision.fail(**_safe_kwargs(decision.fail, error=str(e)))
-        journal.log(decision)
+        # Schema-adaptive failure handling:
+        # - Some Executive Layer DecisionRecord versions have no .fail()
+        # - Prefer logging a FAIL tier via complete() if available
+        try:
+            if hasattr(decision, "complete"):
+                decision.complete(**_safe_kwargs(
+                    decision.complete,
+                    validation_tier=getattr(validator, "FAIL", "fail"),
+                    validator_metadata={"error": str(e)},
+                ))
+        except Exception:
+            # If complete() can't accept these fields, ignore and just journal log.
+            pass
+
+        try:
+            journal.log(decision)
+        except Exception:
+            # Absolute last resort: write minimal failure record if journal/logging fails
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                logp = _Path(os.path.expanduser("~/.openclaw/logs/guardian-journal.jsonl"))
+                logp.parent.mkdir(parents=True, exist_ok=True)
+                with open(logp, "a", encoding="utf-8") as f:
+                    f.write(_json.dumps({
+                        "task_id": task_id,
+                        "lane": lane,
+                        "action_type": action_type,
+                        "expected_outcome": expected_outcome,
+                        "confidence_pre": confidence_pre,
+                        "error": str(e),
+                        "using_executive_layer": USING_EXECUTIVE_LAYER,
+                    }) + "
+")
+            except Exception:
+                pass
+
         raise
 
 
